@@ -1,0 +1,41 @@
+﻿# ==========================================
+# Godot 4+ Cache & Internal Files
+# ==========================================
+.godot/
+*/.godot/
+*.tmp
+*.translation
+
+# ==========================================
+# Executables & Binaries (Gunakan GitHub Releases)
+# ==========================================
+*.exe
+*.bin
+*.apk
+*.aab
+*.tpz
+*.zip
+*.7z
+*.rar
+*.pck
+
+# ==========================================
+# Export Presets Credentials / Private Keystores
+# ==========================================
+export_credentials.cfg
+*.keystore
+*.jks
+
+# ==========================================
+# OS & Editor Generated Files
+# ==========================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.ico.tmp
+
+# ==========================================
+# Scratch & Temporary Notes
+# ==========================================
+*.log
+*KODE_HEADPAT_*.txt

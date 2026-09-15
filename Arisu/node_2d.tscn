@@ -1,0 +1,35 @@
+[gd_scene load_steps=4 format=3 uid="uid://d4baini8ppvpk"]
+
+[ext_resource type="SpineSkeletonDataResource" uid="uid://dvedmuewuvy0r" path="res://arisu-data.tres" id="1_jouad"]
+[ext_resource type="Script" path="res://spine_sprite.gd" id="2_858o1"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_0n2ic"]
+size = Vector2(277.5, 131.75)
+
+[node name="Node2D" type="Node2D"]
+
+[node name="SpineSprite" type="SpineSprite" parent="."]
+position = Vector2(885.677, 917.166)
+scale = Vector2(0.485321, 0.475597)
+skeleton_data_res = ExtResource("1_jouad")
+preview_skin = "Default"
+preview_animation = "Idle_01"
+preview_frame = false
+preview_time = 0.0
+script = ExtResource("2_858o1")
+
+[node name="SpineBoneNode" type="SpineBoneNode" parent="SpineSprite"]
+show_behind_parent = true
+position = Vector2(53.239, -1279.45)
+rotation = -1.34346
+scale = Vector2(1.00111, 1.00111)
+bone_name = "Touch_Point"
+bone_mode = 1
+
+[node name="Area2D" type="Area2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Area2D"]
+position = Vector2(905, 272)
+shape = SubResource("RectangleShape2D_0n2ic")
+
+[connection signal="input_event" from="Area2D" to="SpineSprite" method="_on_area_2d_input_event"]
