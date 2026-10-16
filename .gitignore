@@ -1,4 +1,4 @@
-﻿# ==========================================
+# ==========================================
 # Godot 4+ Cache & Internal Files
 # ==========================================
 .godot/
@@ -18,6 +18,16 @@
 *.7z
 *.rar
 *.pck
+dist/
+bin/
+obj/
+*/bin/
+*/obj/
+*.pdb
+MiniLiveHost/Release/
+MiniLiveHost/Dist_Portable/
+MiniLiveHost/**/bin/
+MiniLiveHost/**/obj/
 
 # ==========================================
 # Export Presets Credentials / Private Keystores
