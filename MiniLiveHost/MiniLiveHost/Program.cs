@@ -24,6 +24,8 @@ static class Program
 public class AppConfig
 {
     public string? SelectedExePath { get; set; }
+    public bool PauseOnFloatingWindow { get; set; } = false; // Pause when focused on any non-desktop window
+    public bool PauseOnBatterySaver { get; set; } = true;    // Pause when on battery or battery saver
 }
 
 public class TrayApplicationContext : ApplicationContext
@@ -32,6 +34,8 @@ public class TrayApplicationContext : ApplicationContext
     private readonly ContextMenuStrip _trayMenu;
     private readonly ToolStripMenuItem _autoStartItem;
     private readonly ToolStripMenuItem _currentWallpaperItem;
+    private readonly ToolStripMenuItem _floatingWindowPauseItem;
+    private readonly ToolStripMenuItem _batterySaverPauseItem;
 
     private Process? _wallpaperProcess;
     private IntPtr _wallpaperHwnd = IntPtr.Zero;
@@ -42,11 +46,11 @@ public class TrayApplicationContext : ApplicationContext
     private IntPtr _mouseHook = IntPtr.Zero;
     private Win32.LowLevelMouseProc? _mouseProc;
 
-    // Fullscreen auto-pause & memory trim
-    private System.Windows.Forms.Timer? _fullscreenCheckTimer;
-    private int _fullscreenDurationSeconds = 0;
+    // Monitor timer
+    private System.Windows.Forms.Timer? _monitorTimer;
+    private int _pauseConditionDurationSeconds = 0;
     private bool _isSuspended = false;
-    private const int FullscreenThresholdSeconds = 5; // Sleep setelah 5 detik fullscreen
+    private const int PauseThresholdSeconds = 3; // Trigger suspend after 3 seconds
 
     private const string AppName = "MiniLiveHost";
     private const string RegistryRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -68,6 +72,23 @@ public class TrayApplicationContext : ApplicationContext
         var restartItem = new ToolStripMenuItem("Restart Wallpaper", null, (s, e) => RestartWallpaper());
         _trayMenu.Items.Add(restartItem);
 
+        // Performance / Pause Options Submenu
+        var pauseMenu = new ToolStripMenuItem("Power & Performance");
+
+        _floatingWindowPauseItem = new ToolStripMenuItem("Pause when other app is focused", null, OnToggleFloatingWindowPause)
+        {
+            Checked = _config.PauseOnFloatingWindow
+        };
+        pauseMenu.DropDownItems.Add(_floatingWindowPauseItem);
+
+        _batterySaverPauseItem = new ToolStripMenuItem("Pause on Battery / Saver mode", null, OnToggleBatterySaverPause)
+        {
+            Checked = _config.PauseOnBatterySaver
+        };
+        pauseMenu.DropDownItems.Add(_batterySaverPauseItem);
+
+        _trayMenu.Items.Add(pauseMenu);
+
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
         {
             Checked = IsAutoStartEnabled()
@@ -88,42 +109,53 @@ public class TrayApplicationContext : ApplicationContext
         };
 
         InstallMouseHook();
-        StartFullscreenMonitor();
+        StartMonitor();
 
         if (!string.IsNullOrEmpty(_config.SelectedExePath) && File.Exists(_config.SelectedExePath))
         {
             StartWallpaper(_config.SelectedExePath);
         }
-    }
 
-    private void StartFullscreenMonitor()
-    {
-        _fullscreenCheckTimer = new System.Windows.Forms.Timer
+        // Trim startup unpacking memory
+        Task.Delay(2000).ContinueWith(_ =>
         {
-            Interval = 1000 // Cek setiap 1 detik
-        };
-        _fullscreenCheckTimer.Tick += OnFullscreenCheckTick;
-        _fullscreenCheckTimer.Start();
+            try
+            {
+                using var current = Process.GetCurrentProcess();
+                Win32.EmptyWorkingSet(current.Handle);
+            }
+            catch { }
+        });
     }
 
-    private void OnFullscreenCheckTick(object? sender, EventArgs e)
+    private void StartMonitor()
+    {
+        _monitorTimer = new System.Windows.Forms.Timer
+        {
+            Interval = 1000 // Check every 1 second
+        };
+        _monitorTimer.Tick += OnMonitorTick;
+        _monitorTimer.Start();
+    }
+
+    private void OnMonitorTick(object? sender, EventArgs e)
     {
         if (_wallpaperProcess == null || _wallpaperProcess.HasExited || _wallpaperHwnd == IntPtr.Zero)
             return;
 
-        bool isAnyAppFullscreen = CheckIfForegroundAppIsFullscreen();
+        bool shouldPause = ShouldSuspendWallpaper();
 
-        if (isAnyAppFullscreen)
+        if (shouldPause)
         {
-            _fullscreenDurationSeconds++;
-            if (_fullscreenDurationSeconds >= FullscreenThresholdSeconds && !_isSuspended)
+            _pauseConditionDurationSeconds++;
+            if (_pauseConditionDurationSeconds >= PauseThresholdSeconds && !_isSuspended)
             {
                 SuspendWallpaper();
             }
         }
         else
         {
-            _fullscreenDurationSeconds = 0;
+            _pauseConditionDurationSeconds = 0;
             if (_isSuspended)
             {
                 ResumeWallpaper();
@@ -131,25 +163,47 @@ public class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private bool CheckIfForegroundAppIsFullscreen()
+    private bool ShouldSuspendWallpaper()
     {
+        // 1. Check Battery Saver / Unplugged condition if enabled
+        if (_config.PauseOnBatterySaver)
+        {
+            var powerStatus = SystemInformation.PowerStatus;
+            // If on battery and below 30%, or BatteryChargeStatus flag has BatterySaver active
+            if (powerStatus.PowerLineStatus == PowerLineStatus.Offline)
+            {
+                // When on battery, save juice if battery saver is engaged or user enabled battery pause
+                if (powerStatus.BatteryLifePercent < 0.35f)
+                {
+                    return true;
+                }
+            }
+        }
+
+        // 2. Check Foreground Window
         IntPtr fgHwnd = Win32.GetForegroundWindow();
         if (fgHwnd == IntPtr.Zero) return false;
 
-        // Jika foreground adalah desktop itu sendiri, berarti BUKAN fullscreen app
+        // If user is focused on the desktop itself, wallpaper MUST run
         if (IsDesktopSurface(fgHwnd)) return false;
 
-        // Ambil rect jendela foreground
-        if (!Win32.GetWindowRect(fgHwnd, out Win32.RECT rect)) return false;
+        // 3. If option "Pause when other app is focused" is turned ON:
+        if (_config.PauseOnFloatingWindow)
+        {
+            // Any active floating window (browser, discord, notepad) pauses wallpaper
+            return true;
+        }
 
-        // Cek terhadap resolusi layar primary
-        var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        // 4. Otherwise, default behavior: only pause when app is FULLSCREEN (F11 / Game / Maximized)
+        if (Win32.GetWindowRect(fgHwnd, out Win32.RECT rect))
+        {
+            var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+            bool coversScreen = (rect.Left <= screen.Left && rect.Top <= screen.Top &&
+                                 rect.Right >= screen.Right && rect.Bottom >= screen.Bottom);
+            return coversScreen;
+        }
 
-        // Jika ukuran jendela menutupi atau melebihi seluruh area layar
-        bool coversScreen = (rect.Left <= screen.Left && rect.Top <= screen.Top &&
-                             rect.Right >= screen.Right && rect.Bottom >= screen.Bottom);
-
-        return coversScreen;
+        return false;
     }
 
     private void SuspendWallpaper()
@@ -159,17 +213,16 @@ public class TrayApplicationContext : ApplicationContext
 
         try
         {
-            // 1. Sembunyikan window dari render GPU
             if (_wallpaperHwnd != IntPtr.Zero)
             {
                 Win32.ShowWindow(_wallpaperHwnd, 0); // SW_HIDE (GPU render 0%)
             }
 
-            // 2. Bekukan thread proses Godot (CPU 0.00% total)
             Win32.NtSuspendProcess(_wallpaperProcess.Handle);
 
-            // 3. Pangkas alokasi RAM fisik ke level minimum
             Win32.EmptyWorkingSet(_wallpaperProcess.Handle);
+            using var current = Process.GetCurrentProcess();
+            Win32.EmptyWorkingSet(current.Handle);
         }
         catch { }
     }
@@ -181,13 +234,11 @@ public class TrayApplicationContext : ApplicationContext
 
         try
         {
-            // 1. Lanjutkan thread proses Godot seketika
             Win32.NtResumeProcess(_wallpaperProcess.Handle);
 
-            // 2. Tampilkan kembali jendela wallpaper
             if (_wallpaperHwnd != IntPtr.Zero)
             {
-                Win32.ShowWindow(_wallpaperHwnd, 8); // SW_SHOWNA (tampilkan tanpa mencuri fokus)
+                Win32.ShowWindow(_wallpaperHwnd, 8); // SW_SHOWNA (show without stealing focus)
             }
         }
         catch { }
@@ -409,6 +460,20 @@ public class TrayApplicationContext : ApplicationContext
         catch { }
     }
 
+    private void OnToggleFloatingWindowPause(object? sender, EventArgs e)
+    {
+        _config.PauseOnFloatingWindow = !_config.PauseOnFloatingWindow;
+        _floatingWindowPauseItem.Checked = _config.PauseOnFloatingWindow;
+        SaveConfig();
+    }
+
+    private void OnToggleBatterySaverPause(object? sender, EventArgs e)
+    {
+        _config.PauseOnBatterySaver = !_config.PauseOnBatterySaver;
+        _batterySaverPauseItem.Checked = _config.PauseOnBatterySaver;
+        SaveConfig();
+    }
+
     private void OnToggleAutoStart(object? sender, EventArgs e)
     {
         bool isCurrentlyEnabled = IsAutoStartEnabled();
@@ -464,7 +529,7 @@ public class TrayApplicationContext : ApplicationContext
 
     private void OnExit(object? sender, EventArgs e)
     {
-        _fullscreenCheckTimer?.Stop();
+        _monitorTimer?.Stop();
         StopWallpaper();
         if (_mouseHook != IntPtr.Zero)
         {
@@ -479,8 +544,8 @@ public class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
-            _fullscreenCheckTimer?.Stop();
-            _fullscreenCheckTimer?.Dispose();
+            _monitorTimer?.Stop();
+            _monitorTimer?.Dispose();
             StopWallpaper();
             if (_mouseHook != IntPtr.Zero)
             {
@@ -619,7 +684,7 @@ internal static class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
-    // Fullscreen Monitor & Process Suspend / Memory Trim
+    // Monitor & Process Suspend / Memory Trim
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {

@@ -1,0 +1,44 @@
+[gd_scene load_steps=4 format=3 uid="uid://6alyqvcmsuj2"]
+
+[ext_resource type="SpineSkeletonDataResource" uid="uid://cq6b4nd64oo3e" path="res://mika-data.tres" id="1_mikadata"]
+[ext_resource type="Script" path="res://spine_sprite.gd" id="2_mikascript"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_lvx5h"]
+size = Vector2(322.341, 197.318)
+
+[node name="Node2D" type="Node2D"]
+
+[node name="SpineSprite" type="SpineSprite" parent="."]
+position = Vector2(948, 1099)
+scale = Vector2(0.562356, 0.562356)
+skeleton_data_res = ExtResource("1_mikadata")
+preview_skin = "default"
+preview_animation = "Idle_01"
+preview_frame = false
+preview_time = 0.0
+script = ExtResource("2_mikascript")
+
+[node name="SpineBoneNode" type="SpineBoneNode" parent="SpineSprite"]
+show_behind_parent = true
+position = Vector2(-29.1699, -1218.71)
+rotation = -1.67319
+scale = Vector2(1.01938, 1.01938)
+bone_name = "Touch_Point"
+bone_mode = 1
+
+[node name="SpineBoneNode2" type="SpineBoneNode" parent="SpineSprite"]
+show_behind_parent = true
+position = Vector2(-7.85486, -1117.23)
+rotation = -1.66037
+scale = Vector2(1.01155, 1.01155)
+bone_name = "Touch_Eye"
+bone_mode = 1
+
+[node name="Area2D" type="Area2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Area2D"]
+position = Vector2(944, 287)
+rotation = -0.118947
+shape = SubResource("RectangleShape2D_lvx5h")
+
+[connection signal="input_event" from="Area2D" to="SpineSprite" method="_on_area_2d_input_event"]

@@ -1,6 +1,7 @@
-﻿extends SpineSprite
+extends SpineSprite
 
 @onready var touch_bone_node: SpineBoneNode = get_node_or_null("SpineBoneNode")
+@onready var eye_bone_node: SpineBoneNode = get_node_or_null("SpineBoneNode2")
 @onready var hitbox: Area2D = $"../Area2D"
 
 var holding: bool = false
@@ -13,19 +14,22 @@ const MAX_X: float = 80.0
 const DRAG_RANGE_X: float = 120.0
 const SMOOTH_X: float = 0.1
 
-# --- TIMER AUTO-SLEEP ---
-const SLEEP_AFTER_SECONDS: float = 10.0
-var idle_timer: float = 0.0
-var is_sleeping: bool = false
+# Eye tracking variables
+var initial_eye_pos: Vector2 = Vector2.ZERO
+var current_eye_offset: Vector2 = Vector2.ZERO
+var mouse_down: bool = false
+
+# Konfigurasi batas jangkauan lirikan mata Arisu
+const MAX_EYE_RIGHT: float = 60.0    # Limit lirikan ke kanan
+const MAX_EYE_LEFT: float = 60.0     # Limit lirikan ke kiri
+const MAX_EYE_OFFSET_Y: float = 50.0 # Limit lirikan atas-bawah
+const EYE_SMOOTH: float = 0.08
+const EYE_CENTER_OFFSET_X: float = 0.0
 
 func _ready():
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, true)
-	process_mode = Node.PROCESS_MODE_ALWAYS
 	
-	# Pastikan Area2D (hitbox) selalu mendengarkan klik meskipun sedang PAUSED!
-	if hitbox:
-		hitbox.process_mode = Node.PROCESS_MODE_ALWAYS
-
+	# Selalu jalankan animasi Idle 60 FPS normal
 	var state = get_animation_state()
 	if state:
 		state.set_animation("Idle_01", true, 0)
@@ -33,54 +37,58 @@ func _ready():
 	if touch_bone_node:
 		initial_pos = touch_bone_node.position
 
-	wake_up()
+	if not eye_bone_node:
+		eye_bone_node = get_node_or_null("EyeBoneNode")
+	if eye_bone_node:
+		initial_eye_pos = eye_bone_node.position
 
-func _process(delta: float):
-	if is_sleeping:
-		return
+func _process(_delta: float):
+	# 1. Tracking Elus Kepala (Head Movement)
+	if touch_bone_node:
+		if holding:
+			current_x = lerp(current_x, target_x, SMOOTH_X)
+			touch_bone_node.position = initial_pos + Vector2(current_x, 0)
+		elif abs(current_x) > 0.1:
+			current_x = lerp(current_x, 0.0, SMOOTH_X)
+			touch_bone_node.position = initial_pos + Vector2(current_x, 0)
+		elif current_x != 0.0:
+			current_x = 0.0
+			touch_bone_node.position = initial_pos
 
-	if not holding:
-		idle_timer += delta
-		if idle_timer >= SLEEP_AFTER_SECONDS:
-			go_to_sleep()
-			return
+	# 2. Tracking Bola Mata Mengikuti Kursor (Hanya saat mouse ditahan)
+	if eye_bone_node:
+		if not mouse_down or holding:
+			current_eye_offset = lerp(current_eye_offset, Vector2.ZERO, EYE_SMOOTH)
+			eye_bone_node.position = initial_eye_pos + current_eye_offset
+		else:
+			var vp = get_viewport()
+			if vp:
+				var mouse_pos = vp.get_mouse_position()
+				var eye_center = eye_bone_node.global_position + Vector2(EYE_CENTER_OFFSET_X, 0.0)
+				var screen_dir = (mouse_pos - eye_center)
+				
+				var nx = clamp(screen_dir.x / 400.0, -1.0, 1.0)
+				var ny = clamp(screen_dir.y / 300.0, -1.0, 1.0)
+				
+				var target_x_offset: float = 0.0
+				if nx >= 0.0:
+					target_x_offset = nx * MAX_EYE_RIGHT
+				else:
+					target_x_offset = nx * MAX_EYE_LEFT
+				
+				var target_eye = Vector2(
+					target_x_offset,
+					ny * MAX_EYE_OFFSET_Y
+				)
+				
+				current_eye_offset = lerp(current_eye_offset, target_eye, EYE_SMOOTH)
+				eye_bone_node.position = initial_eye_pos + current_eye_offset
 
-	if not touch_bone_node:
-		return
-
-	if holding:
-		current_x = lerp(current_x, target_x, SMOOTH_X)
-		touch_bone_node.position = initial_pos + Vector2(current_x, 0)
-	elif abs(current_x) > 0.1:
-		current_x = lerp(current_x, 0.0, SMOOTH_X)
-		touch_bone_node.position = initial_pos + Vector2(current_x, 0)
-	elif current_x != 0.0:
-		current_x = 0.0
-		touch_bone_node.position = initial_pos
-
-# --- FUNGSI TIDUR ---
-func go_to_sleep():
-	if is_sleeping:
-		return
-	is_sleeping = true
-	# Pause scene tree
-	get_tree().paused = true
-	# Kunci engine ke 1 FPS
-	Engine.max_fps = 1
-
-# --- FUNGSI BANGUN ---
-func wake_up():
-	idle_timer = 0.0
-	is_sleeping = false
-	get_tree().paused = false
-	Engine.max_fps = 60
-
-# Gunakan _unhandled_input agar klik mouse SELALU masuk tanpa terblokir sleep
 func _unhandled_input(event: InputEvent):
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
+			mouse_down = event.pressed
 			if event.pressed:
-				# Cek apakah klik berada di dalam area dahi
 				var mouse_pos = get_viewport().get_mouse_position()
 				if hitbox and is_point_inside_hitbox(mouse_pos):
 					start_pat(mouse_pos.x)
@@ -89,7 +97,6 @@ func _unhandled_input(event: InputEvent):
 					stop_pat()
 
 	elif event is InputEventMouseMotion and holding:
-		wake_up()
 		var dx = event.position.x - start_mouse_x
 		var t = clamp(dx / DRAG_RANGE_X, -1.0, 1.0)
 		target_x = t * MAX_X
@@ -107,7 +114,6 @@ func is_point_inside_hitbox(point: Vector2) -> bool:
 	return rect.has_point(point)
 
 func start_pat(mouse_x: float):
-	wake_up()
 	if holding:
 		return
 	holding = true
@@ -124,7 +130,6 @@ func stop_pat():
 		return
 	holding = false
 	target_x = 0.0
-	idle_timer = 0.0
 	
 	var state = get_animation_state()
 	if state:
@@ -133,5 +138,9 @@ func stop_pat():
 
 func _on_area_2d_input_event(viewport: Node, event: InputEvent, shape_idx: int):
 	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			start_pat(event.position.x)
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			mouse_down = event.pressed
+			if event.pressed:
+				start_pat(event.position.x)
+			elif holding:
+				stop_pat()
