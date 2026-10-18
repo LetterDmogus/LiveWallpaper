@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
@@ -21,11 +22,19 @@ static class Program
     }
 }
 
+public enum WallpaperType
+{
+    Executable,
+    Video
+}
+
 public class AppConfig
 {
-    public string? SelectedExePath { get; set; }
+    public string? SelectedWallpaperPath { get; set; }
+    public WallpaperType WallpaperType { get; set; } = WallpaperType.Executable;
     public bool PauseOnFloatingWindow { get; set; } = false; // Pause when focused on any non-desktop window
     public bool PauseOnBatterySaver { get; set; } = true;    // Pause when on battery or battery saver
+    public bool VideoMuted { get; set; } = true;             // Mute video wallpaper audio
 }
 
 public class TrayApplicationContext : ApplicationContext
@@ -36,6 +45,7 @@ public class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _currentWallpaperItem;
     private readonly ToolStripMenuItem _floatingWindowPauseItem;
     private readonly ToolStripMenuItem _batterySaverPauseItem;
+    private readonly ToolStripMenuItem _videoMuteItem;
 
     private Process? _wallpaperProcess;
     private IntPtr _wallpaperHwnd = IntPtr.Zero;
@@ -55,10 +65,16 @@ public class TrayApplicationContext : ApplicationContext
     private const string AppName = "MiniLiveHost";
     private const string RegistryRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
+    private readonly string _mpvDirectory;
+    private readonly string _mpvExePath;
+
     public TrayApplicationContext()
     {
         _configFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
         _config = LoadConfig();
+
+        _mpvDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpv");
+        _mpvExePath = Path.Combine(_mpvDirectory, "mpv.exe");
 
         _trayMenu = new ContextMenuStrip();
 
@@ -66,8 +82,11 @@ public class TrayApplicationContext : ApplicationContext
         _trayMenu.Items.Add(_currentWallpaperItem);
         _trayMenu.Items.Add(new ToolStripSeparator());
 
-        var selectItem = new ToolStripMenuItem("Select Wallpaper (.exe)...", null, OnSelectWallpaper);
-        _trayMenu.Items.Add(selectItem);
+        var selectExeItem = new ToolStripMenuItem("Select Interactive Wallpaper (.exe)...", null, OnSelectExeWallpaper);
+        _trayMenu.Items.Add(selectExeItem);
+
+        var selectVideoItem = new ToolStripMenuItem("Select Video Wallpaper (.mp4, .mkv, .webm, etc.)...", null, OnSelectVideoWallpaper);
+        _trayMenu.Items.Add(selectVideoItem);
 
         var restartItem = new ToolStripMenuItem("Restart Wallpaper", null, (s, e) => RestartWallpaper());
         _trayMenu.Items.Add(restartItem);
@@ -86,6 +105,12 @@ public class TrayApplicationContext : ApplicationContext
             Checked = _config.PauseOnBatterySaver
         };
         pauseMenu.DropDownItems.Add(_batterySaverPauseItem);
+
+        _videoMuteItem = new ToolStripMenuItem("Mute Video Wallpaper", null, OnToggleVideoMute)
+        {
+            Checked = _config.VideoMuted
+        };
+        pauseMenu.DropDownItems.Add(_videoMuteItem);
 
         _trayMenu.Items.Add(pauseMenu);
 
@@ -111,9 +136,9 @@ public class TrayApplicationContext : ApplicationContext
         InstallMouseHook();
         StartMonitor();
 
-        if (!string.IsNullOrEmpty(_config.SelectedExePath) && File.Exists(_config.SelectedExePath))
+        if (!string.IsNullOrEmpty(_config.SelectedWallpaperPath) && File.Exists(_config.SelectedWallpaperPath))
         {
-            StartWallpaper(_config.SelectedExePath);
+            StartWallpaper(_config.SelectedWallpaperPath, _config.WallpaperType);
         }
 
         // Trim startup unpacking memory
@@ -140,7 +165,7 @@ public class TrayApplicationContext : ApplicationContext
 
     private void OnMonitorTick(object? sender, EventArgs e)
     {
-        if (_wallpaperProcess == null || _wallpaperProcess.HasExited || _wallpaperHwnd == IntPtr.Zero)
+        if (_wallpaperProcess == null || _wallpaperProcess.HasExited)
             return;
 
         bool shouldPause = ShouldSuspendWallpaper();
@@ -148,7 +173,9 @@ public class TrayApplicationContext : ApplicationContext
         if (shouldPause)
         {
             _pauseConditionDurationSeconds++;
-            if (_pauseConditionDurationSeconds >= PauseThresholdSeconds && !_isSuspended)
+            // When PauseOnFloatingWindow is enabled, pause immediately after 1 second instead of waiting 3 seconds
+            int threshold = _config.PauseOnFloatingWindow ? 1 : PauseThresholdSeconds;
+            if (_pauseConditionDurationSeconds >= threshold && !_isSuspended)
             {
                 SuspendWallpaper();
             }
@@ -169,10 +196,8 @@ public class TrayApplicationContext : ApplicationContext
         if (_config.PauseOnBatterySaver)
         {
             var powerStatus = SystemInformation.PowerStatus;
-            // If on battery and below 30%, or BatteryChargeStatus flag has BatterySaver active
             if (powerStatus.PowerLineStatus == PowerLineStatus.Offline)
             {
-                // When on battery, save juice if battery saver is engaged or user enabled battery pause
                 if (powerStatus.BatteryLifePercent < 0.35f)
                 {
                     return true;
@@ -190,7 +215,6 @@ public class TrayApplicationContext : ApplicationContext
         // 3. If option "Pause when other app is focused" is turned ON:
         if (_config.PauseOnFloatingWindow)
         {
-            // Any active floating window (browser, discord, notepad) pauses wallpaper
             return true;
         }
 
@@ -215,12 +239,12 @@ public class TrayApplicationContext : ApplicationContext
         {
             if (_wallpaperHwnd != IntPtr.Zero)
             {
-                Win32.ShowWindow(_wallpaperHwnd, 0); // SW_HIDE (GPU render 0%)
+                Win32.ShowWindow(_wallpaperHwnd, 0); // SW_HIDE
             }
 
             Win32.NtSuspendProcess(_wallpaperProcess.Handle);
-
             Win32.EmptyWorkingSet(_wallpaperProcess.Handle);
+
             using var current = Process.GetCurrentProcess();
             Win32.EmptyWorkingSet(current.Handle);
         }
@@ -238,7 +262,7 @@ public class TrayApplicationContext : ApplicationContext
 
             if (_wallpaperHwnd != IntPtr.Zero)
             {
-                Win32.ShowWindow(_wallpaperHwnd, 8); // SW_SHOWNA (show without stealing focus)
+                Win32.ShowWindow(_wallpaperHwnd, 8); // SW_SHOWNA
             }
         }
         catch { }
@@ -249,37 +273,30 @@ public class TrayApplicationContext : ApplicationContext
         _mouseProc = HookCallback;
         using var curProcess = Process.GetCurrentProcess();
         using var curModule = curProcess.MainModule;
-        _mouseHook = Win32.SetWindowsHookEx(Win32.WH_MOUSE_LL, _mouseProc,
-            Win32.GetModuleHandle(curModule?.ModuleName), 0);
+        _mouseHook = Win32.SetWindowsHookEx(Win32.WH_MOUSE_LL, _mouseProc, Win32.GetModuleHandle(curModule?.ModuleName), 0);
     }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && !_isSuspended && _wallpaperHwnd != IntPtr.Zero && _wallpaperProcess != null && !_wallpaperProcess.HasExited)
+        if (nCode >= 0 && _wallpaperHwnd != IntPtr.Zero && !_isSuspended && _config.WallpaperType == WallpaperType.Executable)
         {
-            var hookStruct = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-            uint msg = (uint)wParam;
-
-            IntPtr pointHwnd = Win32.WindowFromPoint(hookStruct.pt);
-            if (IsDesktopSurface(pointHwnd))
+            uint msg = (uint)wParam.ToInt64();
+            if (msg == Win32.WM_LBUTTONDOWN || msg == Win32.WM_LBUTTONUP || msg == Win32.WM_MOUSEMOVE)
             {
-                var pt = hookStruct.pt;
-                Win32.ScreenToClient(_wallpaperHwnd, ref pt);
+                var hookStruct = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
+                IntPtr targetWnd = Win32.WindowFromPoint(hookStruct.pt);
 
-                IntPtr mousePosLParam = (IntPtr)((pt.y << 16) | (pt.x & 0xFFFF));
-                IntPtr mouseWParam = IntPtr.Zero;
-
-                if (msg == Win32.WM_LBUTTONDOWN || msg == Win32.WM_MOUSEMOVE)
+                if (IsDesktopSurface(targetWnd))
                 {
-                    if (Control.MouseButtons.HasFlag(MouseButtons.Left))
-                    {
-                        mouseWParam = (IntPtr)Win32.MK_LBUTTON;
-                    }
-                }
+                    Win32.POINT pt = hookStruct.pt;
+                    Win32.ScreenToClient(_wallpaperHwnd, ref pt);
 
-                if (msg == Win32.WM_LBUTTONDOWN || msg == Win32.WM_LBUTTONUP || msg == Win32.WM_MOUSEMOVE)
-                {
-                    Win32.PostMessage(_wallpaperHwnd, msg, mouseWParam, mousePosLParam);
+                    IntPtr lparamCoord = new IntPtr((pt.y << 16) | (pt.x & 0xFFFF));
+                    IntPtr wparamFlags = (msg == Win32.WM_LBUTTONDOWN || (msg == Win32.WM_MOUSEMOVE && (Control.MouseButtons & MouseButtons.Left) != 0))
+                        ? (IntPtr)Win32.MK_LBUTTON
+                        : IntPtr.Zero;
+
+                    Win32.PostMessage(_wallpaperHwnd, msg, wparamFlags, lparamCoord);
                 }
             }
         }
@@ -287,46 +304,241 @@ public class TrayApplicationContext : ApplicationContext
         return Win32.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
     }
 
-    private bool IsDesktopSurface(IntPtr hwnd)
+    private bool IsDesktopSurface(IntPtr hWnd)
     {
-        if (hwnd == IntPtr.Zero) return false;
-        if (hwnd == _wallpaperHwnd) return true;
+        if (hWnd == IntPtr.Zero) return false;
 
         var sb = new System.Text.StringBuilder(256);
-        Win32.GetClassName(hwnd, sb, sb.Capacity);
-        string cls = sb.ToString();
+        Win32.GetClassName(hWnd, sb, sb.Capacity);
+        string className = sb.ToString();
 
-        return cls == "SysListView32" || cls == "SHELLDLL_DefView" || cls == "WorkerW" || cls == "Progman";
+        return className == "Progman" ||
+               className == "WorkerW" ||
+               className == "SHELLDLL_DefView" ||
+               className == "SysListView32";
     }
 
-    private void OnSelectWallpaper(object? sender, EventArgs e)
+    private void OnSelectExeWallpaper(object? sender, EventArgs e)
     {
         using var ofd = new OpenFileDialog
         {
             Filter = "Executable Files (*.exe)|*.exe",
-            Title = "Select Wallpaper Executable (Godot / Unity / etc.)"
+            Title = "Select Interactive Wallpaper (.exe)"
         };
 
         if (ofd.ShowDialog() == DialogResult.OK)
         {
-            _config.SelectedExePath = ofd.FileName;
+            _config.SelectedWallpaperPath = ofd.FileName;
+            _config.WallpaperType = WallpaperType.Executable;
             SaveConfig();
-            StartWallpaper(ofd.FileName);
+            StartWallpaper(ofd.FileName, WallpaperType.Executable);
         }
+    }
+
+    private async void OnSelectVideoWallpaper(object? sender, EventArgs e)
+    {
+        // 1. Ensure mpv engine is installed; if not, ask and download automatically
+        if (!File.Exists(_mpvExePath))
+        {
+            var dr = MessageBox.Show(
+                "MPV video engine is required to play video wallpapers with 0% CPU (hardware-accelerated).\n\nWould you like to download and install MPV automatically now (~33 MB)?",
+                "Video Engine Setup",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (dr != DialogResult.Yes) return;
+
+            bool downloaded = await DownloadAndInstallMpvAsync();
+            if (!downloaded)
+            {
+                MessageBox.Show("Failed to download or extract MPV. Please check your internet connection.", "Download Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+        }
+
+        // 2. Open file dialog to choose video
+        using var ofd = new OpenFileDialog
+        {
+            Filter = "Video Files (*.mp4;*.mkv;*.webm;*.avi;*.mov;*.wmv)|*.mp4;*.mkv;*.webm;*.avi;*.mov;*.wmv|All Files (*.*)|*.*",
+            Title = "Select Video Wallpaper"
+        };
+
+        if (ofd.ShowDialog() == DialogResult.OK)
+        {
+            _config.SelectedWallpaperPath = ofd.FileName;
+            _config.WallpaperType = WallpaperType.Video;
+            SaveConfig();
+            StartWallpaper(ofd.FileName, WallpaperType.Video);
+        }
+    }
+
+    private async Task<bool> DownloadAndInstallMpvAsync()
+    {
+        using var progressForm = new Form
+        {
+            Text = "Downloading MPV Video Engine...",
+            Size = new Size(420, 150),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ControlBox = false
+        };
+
+        var label = new Label
+        {
+            Text = "Downloading hardware-accelerated MPV player (~33 MB)...",
+            Location = new Point(20, 20),
+            AutoSize = true
+        };
+        progressForm.Controls.Add(label);
+
+        var pbar = new ProgressBar
+        {
+            Location = new Point(20, 55),
+            Size = new Size(360, 25),
+            Style = ProgressBarStyle.Marquee,
+            MarqueeAnimationSpeed = 30
+        };
+        progressForm.Controls.Add(pbar);
+
+        progressForm.Show();
+
+        return await Task.Run(() =>
+        {
+            string tempArchive = Path.Combine(Path.GetTempPath(), "mpv_engine.7z");
+            try
+            {
+                // High-performance direct release build from shinchiro
+                string downloadUrl = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261018/mpv-x86_64-20261018-git-01e2533f31.7z";
+
+                using (var httpClient = new HttpClient())
+                {
+                    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+                    using var response = httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+                    response.EnsureSuccessStatusCode();
+
+                    using var fs = new FileStream(tempArchive, FileMode.Create, FileAccess.Write, FileShare.None);
+                    response.Content.CopyToAsync(fs).GetAwaiter().GetResult();
+                }
+
+                Directory.CreateDirectory(_mpvDirectory);
+
+                // Use Windows built-in tar.exe which natively extracts .7z
+                var tarPsi = new ProcessStartInfo
+                {
+                    FileName = "tar.exe",
+                    Arguments = $"-xf \"{tempArchive}\" -C \"{_mpvDirectory}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                };
+
+                using var tarProc = Process.Start(tarPsi);
+                tarProc?.WaitForExit(30000);
+
+                return File.Exists(_mpvExePath);
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                try { if (File.Exists(tempArchive)) File.Delete(tempArchive); } catch { }
+                progressForm.Invoke(() => progressForm.Close());
+            }
+        });
     }
 
     private void RestartWallpaper()
     {
-        if (!string.IsNullOrEmpty(_config.SelectedExePath) && File.Exists(_config.SelectedExePath))
+        if (!string.IsNullOrEmpty(_config.SelectedWallpaperPath) && File.Exists(_config.SelectedWallpaperPath))
         {
-            StartWallpaper(_config.SelectedExePath);
+            StartWallpaper(_config.SelectedWallpaperPath, _config.WallpaperType);
         }
     }
 
-    private void StartWallpaper(string exePath)
+    private void StartWallpaper(string path, WallpaperType type)
     {
         StopWallpaper();
 
+        if (type == WallpaperType.Video)
+        {
+            StartVideoWallpaper(path);
+        }
+        else
+        {
+            StartExeWallpaper(path);
+        }
+    }
+
+    private void StartVideoWallpaper(string videoPath)
+    {
+        if (!File.Exists(_mpvExePath))
+        {
+            MessageBox.Show("MPV player not found. Please select video again to download it.", "Engine Missing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            IntPtr workerw = GetDesktopWorkerW();
+            if (workerw == IntPtr.Zero) return;
+
+            var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+
+            // MPV flags dioptimasi khusus untuk wallpaper (ultra-rendah CPU & GPU):
+            // --vo=gpu: Gunakan direct shader GPU renderer standar yang sangat ringan (bukan gpu-next yang berat)
+            // --profile=fast: Matikan post-processing shader berat yang tidak perlu
+            // --hwdec=auto-safe: Gunakan hardware video decoding chip (DXVA2 / D3D11VA)
+            // --scale=bilinear / dscale=bilinear: Interpolasi video ringan, hemat GPU hingga 70%
+            // --video-sync=audio: Mencegah render loop overhead tinggi
+            // --no-osc --no-osd-bar: Matikan UI controller
+            string muteArg = _config.VideoMuted ? "--mute=yes" : "--mute=no";
+            string args = $"--wid={workerw.ToInt64()} --loop-file=inf --vo=gpu --profile=fast --hwdec=auto-safe --scale=bilinear --dscale=bilinear --video-sync=audio --keep-open {muteArg} --no-osc --no-osd-bar --no-input-default-bindings --no-input-cursor --geometry={screen.Width}x{screen.Height}+0+0 \"{videoPath}\"";
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _mpvExePath,
+                Arguments = args,
+                WorkingDirectory = _mpvDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            _wallpaperProcess = Process.Start(psi);
+            if (_wallpaperProcess == null)
+            {
+                MessageBox.Show("Failed to launch MPV video player.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            _currentWallpaperItem.Text = $"Active (Video): {Path.GetFileName(videoPath)}";
+
+            Task.Run(() =>
+            {
+                for (int i = 0; i < 50; i++)
+                {
+                    if (_wallpaperProcess == null || _wallpaperProcess.HasExited) return;
+                    _wallpaperProcess.Refresh();
+                    IntPtr hwnd = _wallpaperProcess.MainWindowHandle;
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        _wallpaperHwnd = hwnd;
+                        break;
+                    }
+                    Thread.Sleep(100);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to start video wallpaper: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void StartExeWallpaper(string exePath)
+    {
         try
         {
             var psi = new ProcessStartInfo
@@ -345,7 +557,7 @@ public class TrayApplicationContext : ApplicationContext
 
             _currentWallpaperItem.Text = $"Active: {Path.GetFileName(exePath)}";
 
-            Task.Run(() => AttachToDesktop(_wallpaperProcess));
+            Task.Run(() => AttachExeToDesktop(_wallpaperProcess));
         }
         catch (Exception ex)
         {
@@ -353,7 +565,7 @@ public class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void AttachToDesktop(Process proc)
+    private void AttachExeToDesktop(Process proc)
     {
         IntPtr hWndChild = IntPtr.Zero;
         for (int i = 0; i < 50; i++)
@@ -474,6 +686,19 @@ public class TrayApplicationContext : ApplicationContext
         SaveConfig();
     }
 
+    private void OnToggleVideoMute(object? sender, EventArgs e)
+    {
+        _config.VideoMuted = !_config.VideoMuted;
+        _videoMuteItem.Checked = _config.VideoMuted;
+        SaveConfig();
+
+        // If currently playing video, restart to apply mute setting
+        if (_config.WallpaperType == WallpaperType.Video && _wallpaperProcess != null && !_wallpaperProcess.HasExited)
+        {
+            RestartWallpaper();
+        }
+    }
+
     private void OnToggleAutoStart(object? sender, EventArgs e)
     {
         bool isCurrentlyEnabled = IsAutoStartEnabled();
@@ -510,7 +735,8 @@ public class TrayApplicationContext : ApplicationContext
             if (File.Exists(_configFilePath))
             {
                 string json = File.ReadAllText(_configFilePath);
-                return JsonSerializer.Deserialize<AppConfig>(json) ?? new AppConfig();
+                var cfg = JsonSerializer.Deserialize<AppConfig>(json);
+                if (cfg != null) return cfg;
             }
         }
         catch { }
@@ -559,36 +785,8 @@ public class TrayApplicationContext : ApplicationContext
     }
 }
 
-internal static class Win32
+public static class Win32
 {
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string? className, string? windowTitle);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam,
-        SendMessageTimeoutFlags fuFlags, uint uTimeout, out IntPtr lpdwResult);
-
-    [Flags]
-    public enum SendMessageTimeoutFlags : uint
-    {
-        SMTO_NORMAL = 0x0,
-        SMTO_BLOCK = 0x0001,
-        SMTO_ABORTIFHUNG = 0x0002,
-        SMTO_NOTIMEOUTIFNOTHUNG = 0x0008
-    }
-
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
-
     public const int GWL_STYLE = -16;
     public const int WS_CAPTION = 0x00C00000;
     public const int WS_THICKFRAME = 0x00040000;
@@ -596,15 +794,24 @@ internal static class Win32
     public const int WS_MAXIMIZEBOX = 0x00010000;
     public const int WS_SYSMENU = 0x00080000;
 
-    [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
-    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-
-    [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
-    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_SHOWWINDOW = 0x0040;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string? className, string? windowTitle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+    [DllImport("user32.dll")]
+    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -614,6 +821,26 @@ internal static class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [Flags]
+    public enum SendMessageTimeoutFlags : uint
+    {
+        SMTO_NORMAL = 0x0,
+        SMTO_BLOCK = 0x1,
+        SMTO_ABORTIFHUNG = 0x2,
+        SMTO_NOTIMEOUTIFNOTHUNG = 0x8
+    }
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam,
+        SendMessageTimeoutFlags fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    // Desktop wallpaper restore & redraw flags
     public const uint RDW_INVALIDATE = 0x0001;
     public const uint RDW_ERASE = 0x0004;
     public const uint RDW_ALLCHILDREN = 0x0080;
