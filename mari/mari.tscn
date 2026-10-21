@@ -1,0 +1,58 @@
+[gd_scene load_steps=5 format=3 uid="uid://bfc1cynllxhkw"]
+
+[ext_resource type="SpineSkeletonDataResource" uid="uid://c54rh0ui6a0ts" path="res://mari-data.tres" id="1_wia3n"]
+[ext_resource type="Script" path="res://spine_sprite.gd" id="2_jnwej"]
+[ext_resource type="AudioStream" uid="uid://dx6q8552byaa1" path="res://wallpaper.ogg" id="3_tbl0r"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_6ft53"]
+size = Vector2(321.726, 197.384)
+
+[node name="Node2D" type="Node2D"]
+
+[node name="SpineSprite" type="SpineSprite" parent="."]
+position = Vector2(956, 1126)
+scale = Vector2(0.580087, 0.580087)
+skeleton_data_res = ExtResource("1_wia3n")
+preview_skin = "default"
+preview_animation = "-- Empty --"
+preview_frame = false
+preview_time = 0.0
+script = ExtResource("2_jnwej")
+
+[node name="SpineBoneNode" type="SpineBoneNode" parent="SpineSprite"]
+show_behind_parent = true
+position = Vector2(386.066, -1237.63)
+rotation = -1.02695
+scale = Vector2(1, 0.999999)
+bone_name = "Touch_Point"
+bone_mode = 1
+
+[node name="SpineBoneNode2" type="SpineBoneNode" parent="SpineSprite"]
+show_behind_parent = true
+position = Vector2(331.973, -1148.61)
+rotation = -1.02695
+scale = Vector2(1, 0.999999)
+bone_name = "Touch_Eye"
+bone_mode = 1
+
+[node name="Area2D" type="Area2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Area2D"]
+position = Vector2(1211, 336)
+rotation = 0.433438
+shape = SubResource("RectangleShape2D_6ft53")
+
+[node name="AudioStreamPlayer2D" type="AudioStreamPlayer2D" parent="."]
+stream = ExtResource("3_tbl0r")
+volume_db = 10.0
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="MuteButton" type="Button" parent="CanvasLayer"]
+offset_left = 1846.0
+offset_top = 12.0
+offset_right = 1908.0
+offset_bottom = 67.0
+text = "🔇"
+
+[connection signal="input_event" from="Area2D" to="SpineSprite" method="_on_area_2d_input_event"]

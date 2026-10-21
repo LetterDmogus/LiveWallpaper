@@ -1,0 +1,8 @@
+[gd_resource type="SpineSkeletonDataResource" load_steps=3 format=3 uid="uid://c54rh0ui6a0ts"]
+
+[ext_resource type="SpineAtlasResource" uid="uid://l8fhd7fmvwl" path="res://CH0273_home.atlas" id="1_weeb5"]
+[ext_resource type="SpineSkeletonFileResource" uid="uid://bc3dky216ladu" path="res://CH0273_home.skel" id="2_3alo8"]
+
+[resource]
+atlas_res = ExtResource("1_weeb5")
+skeleton_file_res = ExtResource("2_3alo8")

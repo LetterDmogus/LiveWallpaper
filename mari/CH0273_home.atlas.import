@@ -1,0 +1,16 @@
+[remap]
+
+importer="spine.atlas"
+type="SpineAtlasResource"
+uid="uid://l8fhd7fmvwl"
+path="res://.godot/imported/CH0273_home.atlas-736ff0dc5719d4849e966bf3a7b15bd7.spatlas"
+
+[deps]
+
+source_file="res://CH0273_home.atlas"
+dest_files=["res://.godot/imported/CH0273_home.atlas-736ff0dc5719d4849e966bf3a7b15bd7.spatlas"]
+
+[params]
+
+normal_map_prefix="n"
+specular_map_prefix="s"

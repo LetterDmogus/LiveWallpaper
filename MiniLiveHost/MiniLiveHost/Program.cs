@@ -73,6 +73,7 @@ public class TrayApplicationContext : ApplicationContext
 
     // Monitor timer untuk Pause saat fullscreen / hemat baterai
     private System.Windows.Forms.Timer? _monitorTimer;
+
     private int _pauseConditionDurationSeconds = 0;
     private bool _isSuspended = false;
     private const int PauseThresholdSeconds = 3;
@@ -248,6 +249,11 @@ public class TrayApplicationContext : ApplicationContext
         IntPtr fgHwnd = Win32.GetForegroundWindow();
         if (fgHwnd == IntPtr.Zero) return false;
 
+        // Kalau window yang sedang foreground itu ADALAH wallpaper kita sendiri,
+        // jangan diperlakukan sebagai "app lain yang menutupi layar" - kalau tidak
+        // kita akan hide lalu show berulang (flicker) tanpa alasan.
+        if (fgHwnd == GetActiveWindowHandle()) return false;
+
         if (IsDesktopSurface(fgHwnd)) return false;
 
         if (_config.PauseOnFloatingWindow)
@@ -270,15 +276,19 @@ public class TrayApplicationContext : ApplicationContext
     {
         var proc = GetActiveProcess();
         if (_isSuspended || proc == null || proc.HasExited) return;
+
+        // Jangan bekukan proses sebelum window wallpaper benar-benar jadi.
+        // Kalau proses di-suspend duluan (mis. saat Windows boot, foreground sudah
+        // aplikasi lain sehingga PauseOnFloatingWindow langsung aktif), Godot
+        // tidak pernah sempat membuat window-nya -> wallpaper tidak pernah muncul.
+        IntPtr hwnd = GetActiveWindowHandle();
+        if (hwnd == IntPtr.Zero) return;
+
         _isSuspended = true;
 
         try
         {
-            IntPtr hwnd = GetActiveWindowHandle();
-            if (hwnd != IntPtr.Zero)
-            {
-                Win32.ShowWindow(hwnd, 0); // SW_HIDE
-            }
+            Win32.ShowWindow(hwnd, 0); // SW_HIDE
 
             Win32.NtSuspendProcess(proc.Handle);
             Win32.EmptyWorkingSet(proc.Handle);
@@ -286,7 +296,10 @@ public class TrayApplicationContext : ApplicationContext
             using var current = Process.GetCurrentProcess();
             Win32.EmptyWorkingSet(current.Handle);
         }
-        catch { }
+        catch
+        {
+            _isSuspended = false;
+        }
     }
 
     private void ResumeWallpaper()
@@ -302,7 +315,9 @@ public class TrayApplicationContext : ApplicationContext
             IntPtr hwnd = GetActiveWindowHandle();
             if (hwnd != IntPtr.Zero)
             {
-                Win32.ShowWindow(hwnd, 8); // SW_SHOWNA
+                // SW_SHOWNOACTIVATE (4): tampilkan tanpa mengaktifkan window.
+                // SW_SHOWNA (8) mirip SW_SHOW dan bisa meninggikan z-order.
+                Win32.ShowWindow(hwnd, 4); // SW_SHOWNOACTIVATE
             }
         }
         catch { }

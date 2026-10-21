@@ -16,10 +16,18 @@ public static class Win32
     public const int WS_MAXIMIZEBOX = 0x00010000;
     public const int WS_SYSMENU = 0x00080000;
     public const int WS_CHILD = 0x40000000;
+    public const int WS_POPUP = unchecked((int)0x80000000);
 
-    public const uint SWP_NOZORDER = 0x0004;
+    public const int WS_EX_TOPMOST = 0x00000008;
+    public const int WS_EX_TOOLWINDOW = 0x00000080;
+    public const int WS_EX_NOACTIVATE = 0x08000000;
+    public const int WS_EX_APPWINDOW = 0x00040000;
+
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_SHOWWINDOW = 0x0040;
+    public const uint SWP_NOACTIVATE = 0x0010;
+
+    public static readonly IntPtr HWND_BOTTOM = new IntPtr(0x0001);
 
     public const uint RDW_INVALIDATE = 0x0001;
     public const uint RDW_ERASE = 0x0004;
@@ -48,11 +56,37 @@ public static class Win32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
 
-    [DllImport("user32.dll")]
-    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
 
-    [DllImport("user32.dll")]
-    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLongPtr32(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLongPtr32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    /// <summary>
+    /// GetWindowLongPtr yang aman untuk proses 32-bit maupun 64-bit.
+    /// </summary>
+    public static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
+    {
+        return IntPtr.Size == 8
+            ? GetWindowLongPtr64(hWnd, nIndex)
+            : new IntPtr(GetWindowLongPtr32(hWnd, nIndex));
+    }
+
+    /// <summary>
+    /// SetWindowLongPtr yang aman untuk proses 32-bit maupun 64-bit.
+    /// </summary>
+    public static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+    {
+        return IntPtr.Size == 8
+            ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong)
+            : new IntPtr(SetWindowLongPtr32(hWnd, nIndex, dwNewLong.ToInt32()));
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -125,6 +159,9 @@ public static class Win32
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
@@ -145,6 +182,10 @@ public static class Win32
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
