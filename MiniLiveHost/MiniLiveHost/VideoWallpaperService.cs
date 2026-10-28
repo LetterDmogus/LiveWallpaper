@@ -165,17 +165,26 @@ public class VideoWallpaperService
 
             onStatusChanged($"Active (Video): {Path.GetFileName(videoPath)}");
 
+            // mpv diluncurkan dengan --wid sehingga me-render sebagai CHILD window
+            // di dalam WorkerW dan TIDAK membuat top-level window. Akibatnya
+            // Process.MainWindowHandle selalu 0 -> _wallpaperHwnd tidak pernah terisi
+            // -> fitur Pause di Program.SuspendWallpaper() tidak pernah aktif.
+            // Solusi: cari window mpv langsung di bawah WorkerW berdasarkan PID.
+            var proc = _wallpaperProcess;
             Task.Run(() =>
             {
-                for (int i = 0; i < 50; i++)
+                uint pid;
+                try { pid = (uint)proc.Id; } catch { return; }
+
+                for (int i = 0; i < 100; i++) // maksimal ~10 detik
                 {
-                    if (_wallpaperProcess == null || _wallpaperProcess.HasExited) return;
-                    _wallpaperProcess.Refresh();
-                    IntPtr hwnd = _wallpaperProcess.MainWindowHandle;
+                    try { if (proc.HasExited) return; } catch { return; }
+
+                    IntPtr hwnd = FindMpvWindow(workerw, pid);
                     if (hwnd != IntPtr.Zero)
                     {
                         _wallpaperHwnd = hwnd;
-                        break;
+                        return;
                     }
                     Thread.Sleep(100);
                 }
@@ -188,6 +197,46 @@ public class VideoWallpaperService
             MessageBox.Show($"Failed to start video wallpaper: {ex.Message}\n\nStack:\n{ex.StackTrace}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Cari window mpv. Dengan --wid, mpv membuat CHILD window di dalam WorkerW
+    /// sehingga Process.MainWindowHandle tidak akan pernah menemukannya.
+    /// </summary>
+    private static IntPtr FindMpvWindow(IntPtr workerw, uint mpvPid)
+    {
+        if (workerw == IntPtr.Zero || mpvPid == 0) return IntPtr.Zero;
+
+        // Paling akurat: enum child WorkerW dan cocokkan PID mpv.
+        IntPtr found = IntPtr.Zero;
+        Win32.EnumChildWindows(workerw, (h, l) =>
+        {
+            Win32.GetWindowThreadProcessId(h, out uint pid);
+            if (pid == mpvPid)
+            {
+                found = h;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        if (found != IntPtr.Zero) return found;
+
+        // Fallback: window mpv terdaftar dengan class "mpv".
+        IntPtr byClass = Win32.FindWindowEx(workerw, IntPtr.Zero, "mpv", null);
+        if (byClass != IntPtr.Zero) return byClass;
+
+        // Fallback terakhir: beberapa build mpv mungkin tetap membuat top-level window.
+        Win32.EnumWindows((h, l) =>
+        {
+            Win32.GetWindowThreadProcessId(h, out uint pid);
+            if (pid == mpvPid && Win32.IsWindowVisible(h))
+            {
+                found = h;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
     }
 
     public void Stop()

@@ -277,18 +277,27 @@ public class TrayApplicationContext : ApplicationContext
         var proc = GetActiveProcess();
         if (_isSuspended || proc == null || proc.HasExited) return;
 
-        // Jangan bekukan proses sebelum window wallpaper benar-benar jadi.
+        bool isVideo = _config.WallpaperType == WallpaperType.Video;
+        IntPtr hwnd = GetActiveWindowHandle();
+
+        // EXE: jangan bekukan proses sebelum window wallpaper benar-benar jadi.
         // Kalau proses di-suspend duluan (mis. saat Windows boot, foreground sudah
         // aplikasi lain sehingga PauseOnFloatingWindow langsung aktif), Godot
         // tidak pernah sempat membuat window-nya -> wallpaper tidak pernah muncul.
-        IntPtr hwnd = GetActiveWindowHandle();
-        if (hwnd == IntPtr.Zero) return;
+        //
+        // VIDEO: mpv tidak membuat top-level window (embed via --wid), jadi tidak
+        // butuh hwnd. Cukup bekukan prosesnya - frame terakhir tetap tampil beku,
+        // tanpa perlu hide/show window.
+        if (!isVideo && hwnd == IntPtr.Zero) return;
 
         _isSuspended = true;
 
         try
         {
-            Win32.ShowWindow(hwnd, 0); // SW_HIDE
+            if (!isVideo)
+            {
+                Win32.ShowWindow(hwnd, 0); // SW_HIDE
+            }
 
             Win32.NtSuspendProcess(proc.Handle);
             Win32.EmptyWorkingSet(proc.Handle);
@@ -312,12 +321,16 @@ public class TrayApplicationContext : ApplicationContext
         {
             Win32.NtResumeProcess(proc.Handle);
 
-            IntPtr hwnd = GetActiveWindowHandle();
-            if (hwnd != IntPtr.Zero)
+            // Hanya EXE yang di-hide saat suspend; video cukup di-resume prosesnya.
+            if (_config.WallpaperType != WallpaperType.Video)
             {
-                // SW_SHOWNOACTIVATE (4): tampilkan tanpa mengaktifkan window.
-                // SW_SHOWNA (8) mirip SW_SHOW dan bisa meninggikan z-order.
-                Win32.ShowWindow(hwnd, 4); // SW_SHOWNOACTIVATE
+                IntPtr hwnd = GetActiveWindowHandle();
+                if (hwnd != IntPtr.Zero)
+                {
+                    // SW_SHOWNOACTIVATE (4): tampilkan tanpa mengaktifkan window.
+                    // SW_SHOWNA (8) mirip SW_SHOW dan bisa meninggikan z-order.
+                    Win32.ShowWindow(hwnd, 4); // SW_SHOWNOACTIVATE
+                }
             }
         }
         catch { }
